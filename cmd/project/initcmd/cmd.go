@@ -19,8 +19,9 @@ type Options struct {
 	force bool
 }
 
-type Summarize struct {
+type SummarizeArrow struct {
 	Project_root	string					`json:"project_root"`
+	Branch			string					`json:"branch"`
 	Sources 		map[string]SourceDetail `json:"sources"`
 	Insert_target 	string 					`json:"insert_target"`
 }
@@ -31,13 +32,19 @@ type SourceDetail struct {
 	Key		string `json:"keyword"`
 }
 
+type SummarizeQuiver struct {
+	Specify	[]string `json:"specify"`
+	Ignore	[]string `json:"ignore"`
+}
+
 var (
 	logger = log.New(os.Stderr, "init: ", log.LstdFlags)
 
 	opt Options
 
-	lang_json = Summarize {
+	arrowJson = SummarizeArrow {
 		".",
+		".*",
 		map[string]SourceDetail {
 			"python3": {
 				"code_python3",
@@ -62,23 +69,30 @@ var (
 		},
 		"DEFAULT.md",
 	}
+
+	quiverJson = SummarizeQuiver {
+		make([]string, 0),
+		make([]string, 0),
+	}
 )
 
-func create_json(data Summarize) error {
-	json_data, err := json.Marshal(data)
+func createSettingsDirectory() error {
+	if _, err := os.Stat("./.cheiron"); !opt.force && os.IsExist(err) {
+		return fmt.Errorf("[.cheiron] already exists\nif you wanna overwrite, use f option")
+	}
+
+	os.Mkdir("./.cheiron", 0777)
+
+	return nil;
+}
+
+func createJson(source interface{}, name string) error {
+	json_data, err := json.Marshal(source)
 	if err != nil {
 		fmt.Println(err)
 	}
 
-	if _, err := os.Stat("../cheiron_settings"); os.IsNotExist(err) {
-		os.Mkdir("../cheiron_settings", 0777)
-	}
-
-	if _, err := os.Stat("../cheiron_settings/arrow.json"); !opt.force && !os.IsNotExist(err) {
-		return fmt.Errorf("[arrow.json] already exists\nif you wanna overwrite, use f option")
-	}
-	
-	err = ioutil.WriteFile("../cheiron_settings/arrow.json", json_data, 0777)
+	err = ioutil.WriteFile(fmt.Sprintf("./.cheiron/%s", name), json_data, 0777)
 	if err != nil {
 		return err
 	}
@@ -87,11 +101,19 @@ func create_json(data Summarize) error {
 }
 
 func run(c *cobra.Command, args []string) {
-	err := create_json(lang_json)
-	if err != nil {
+	if err := createSettingsDirectory(); err != nil {
 		logger.Fatalln(err)
 	}
-	fmt.Println("Created directory [../cheiron_settings/arrow.json]\nYou can edit it to add target language")
+
+	if err := createJson(arrowJson, "arrow.json"); err != nil {
+		logger.Fatalln(err)
+	}
+
+	if err := createJson(quiverJson, "quiver.json"); err != nil {
+		logger.Fatalln(err)
+	}
+
+	fmt.Println("Created directory [./.cheiron]\nBy Editing json, you can add hook")
 }
 
 func init() {

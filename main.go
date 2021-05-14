@@ -9,7 +9,7 @@ import (
 
 var cmd = &cobra.Command {
 	Use: "cheiron",
-	Version: "v0.0.0",
+	Version: "v1.0.0",
 }
 
 func init() {

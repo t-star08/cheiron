@@ -17,19 +17,29 @@ import (
 
 var CMD = &cobra.Command{
 	Use:	"arrow",
-	Run:	run,
+	Run:	Run,
 }
 
 var (
 	logger = log.New(os.Stderr, "arrow: ", log.LstdFlags)
 
-	from_json Summarize
-	// candidate_directories
-	cndt_dires []string
-	re *regexp.Regexp
+	arrow Arrow
 
-	hooks 	Hook
+	branchPath		[]string
+	codeDirPath		[]string
+	codeFilePath	[]string
+	targetFilePath	string
+
 	opt		Options
+	hooks 	Hook
+
+	regexpShortCut map[string]string = map[string]string {
+		"$A": `^[\w\s]+$`,
+		"$B": `^[\w]+$`,
+		"$C": ".*",
+		"$D": "^[0-9]",
+		"$E": ".",
+	}
 )
 
 type Options struct {
@@ -40,13 +50,14 @@ type Options struct {
 
 type Hook struct {
 	hooks	[]string
-	max_len	int
+	maxLen	int
 }
 
-type Summarize struct {
-	Project_root	string					`json:"project_root"`
+type Arrow struct {
+	ProjectRoot		string					`json:"project_root"`
+	Branch			string					`json:"branch"`
 	Sources 		map[string]SourceDetail `json:"sources"`
-	Insert_target 	string 					`json:"insert_target"`
+	InsertTarget 	string 					`json:"insert_target"`
 }
 
 type SourceDetail struct {
@@ -55,71 +66,179 @@ type SourceDetail struct {
 	Key		string `json:"keyword"`
 }
 
-func check_args(json map[string]SourceDetail, args []string) error {
+func checkArgs(sources map[string]SourceDetail, args []string) error {
+	hooks.hooks = make([]string, 0)
+	
 	for _, hook := range args {
-		if _, exist := json[hook]; exist {
+		if _, exist := sources[hook]; exist {
 			hooks.hooks = append(hooks.hooks, hook)
-			if hooks.max_len < len(hook) {
-				hooks.max_len = len(hook)
+			if hooks.maxLen < len(hook) {
+				hooks.maxLen = len(hook)
 			}
 		}
 	}
 
 	if len(hooks.hooks) == 0 {
-		return fmt.Errorf("args are not registered in setting file [arrow.json]")
+		return fmt.Errorf("args not registered in setting file [arrow.json]")
 	}
 	return nil
 }
 
-func list_candidate_dires() error {
-	ls_dir, err := ioutil.ReadDir("./")
+func visit(path string, depth int) ([]string, error) {
+	spot := make([]string, 0)
+
+	sep := strings.Split(path, "/")
+	if depth == len(sep) {
+		spot = append(spot, path)
+		return spot, nil
+	}
+
+	head := sep[depth]
+	if head == "" {
+		spot = append(spot, strings.Join(sep[:depth], "/"))
+		return spot, nil
+	}
+
+
+	if info, err := os.Stat(head); !os.IsNotExist(err) {
+		if info.IsDir() {
+			wd, _ := os.Getwd()
+			defer os.Chdir(wd)
+
+			os.Chdir(head)
+			if p, err := visit(strings.Join(sep, "/"), depth+1); err != nil {
+				return spot, err
+			} else {
+				return append(spot, p...), nil
+			}
+		} else if depth == len(sep)-1 {
+			return append(spot, path), nil
+		}
+	}
+
+
+	// 完全一致
+	re, err := regexp.Compile(head)
+	if err != nil {
+		return spot, err
+	}
+	if exp, exist := regexpShortCut[head]; exist {
+		re, err = regexp.Compile(exp)
+		if err != nil {
+			return spot, err
+		}
+	}
+
+	lsDir, err := ioutil.ReadDir(".")
+	if err != nil {
+		return spot, err
+	}
+
+	for _, info := range lsDir {
+		name := info.Name()
+		if re.MatchString(name) && info.IsDir() {
+			os.Chdir(name)
+
+			sep[depth] = name
+			if p, err := visit(strings.Join(sep, "/"), depth+1); err != nil {
+				fmt.Println(err)
+			} else {
+				spot = append(spot, p...)
+			}
+
+			os.Chdir("..")
+		}
+	}
+
+	return spot, nil
+}
+
+func detectBranchPath(path string) error {
+	if p, err := visit(path, 0); err != nil {
+		return err
+	} else {
+		if len(p) == 0 {
+			wd, _ := os.Getwd()
+			return fmt.Errorf("no file matched [%s/%s]", wd, path)
+		}
+		branchPath = p
+		return nil
+	}
+}
+
+func listCodeDirPath(path string) error {
+	if p, err := visit(path, 0); err != nil {
+		return err
+	} else {
+		if len(p) == 0 {
+			wd, _ := os.Getwd()
+			return fmt.Errorf("no file matched [%s/%s]", wd, path)
+		}
+		codeDirPath = p
+		return nil
+	}
+}
+
+func AdditionalListCodePath() {
+	if opt.simple {
+		return
+	}
+	rst := make([]string, 0)
+	for _, path := range codeDirPath {
+		rst = append(rst, path)
+		i := 2
+		for {
+			if info, err := os.Stat(fmt.Sprintf("%s_%d", path, i)); !os.IsNotExist(err) && info.IsDir() {
+				rst = append(rst, fmt.Sprintf("%s_%d", path, i))
+			} else {
+				break
+			}
+			i += 1
+		}
+	}
+	codeDirPath = rst
+}
+
+func listCodeFilePath(codeFile string) error {
+	rst := make([]string, 0)
+	re, err := regexp.Compile(codeFile)
 	if err != nil {
 		return err
 	}
 
-	for _, info := range ls_dir {
-		if info.IsDir() && re.MatchString(info.Name()) {
-			cndt_dires = append(cndt_dires, info.Name())
+	for _, path := range codeDirPath {
+		lsDir, _ := ioutil.ReadDir(path)
+		if _, err := os.Stat(fmt.Sprintf("%s/%s", path, codeFile)); !os.IsNotExist(err) {
+			rst = append(rst, fmt.Sprintf("%s/%s", path, codeFile))
+			continue
+		}
+		for _, info := range lsDir {
+			name := info.Name()
+			if !info.IsDir() && re.MatchString(name) {
+				rst = append(rst, fmt.Sprintf("%s/%s", path, name))
+			}
 		}
 	}
-
-	if len(cndt_dires) == 0 {
-		return fmt.Errorf("no candidate directories")
-	}
+	
+	codeFilePath = rst
 
 	return nil
 }
 
-func list_all_code_path(base, code_dir, code_file, hook string) ([]string, error) {
-	rst := make([]string, 0)
-
-	
-	base = fmt.Sprintf("%s/%s", base, code_dir)
-	code_path := fmt.Sprintf("%s/%s", base, code_file)
-	_, err := os.Stat(code_path)
-	if err != nil {
-		return rst, fmt.Errorf("%*s: %s/%s: no code file", hooks.max_len, hook, from_json.Project_root, code_path)
-	}
-	rst = append(rst, code_path)
-
-	if opt.simple {
-		return rst, nil
-	}
-
-	i := 2
-	for {
-		code_path := fmt.Sprintf("%s_%d/%s", base, i, code_file)
-		_, err := os.Stat(code_path)
-		if err != nil {
-			return rst, nil
+func detectTargetFile(path string) error {
+	if p, err := visit(path, 0); err != nil {
+		return err
+	} else {
+		if len(p) == 0 {
+			wd, _ := os.Getwd()
+			return fmt.Errorf("%s/%s does not exist", wd, path)
 		}
-		rst = append(rst, code_path)
-
-		i += 1
+		targetFilePath = p[0]
+		return nil
 	}
 }
 
-func escape_lt(ans []string) []string {
+func escapeLt(ans []string) []string {
 	// Markdown で「<」が特殊文字として扱われてしまうので、エスケープする
 
 	rst := make([]string, len(ans))
@@ -128,7 +247,7 @@ func escape_lt(ans []string) []string {
 		for i := 0; i < len(line); {
 			if char := string(line[i]); char == "<" {
 				i += 1
-				if next_char := string(line[i]); unicode.IsLetter(rune(line[i])) || next_char == "!" || next_char == "?"  {
+				if nextChar := string(line[i]); unicode.IsLetter(rune(line[i])) || nextChar == "!" || nextChar == "?"  {
 					line = line[:i-1] + "&lt;" + line[i:]
 					i += 3
 				}
@@ -142,37 +261,37 @@ func escape_lt(ans []string) []string {
 	return rst
 }
 
-func find_pre_tag(source []string, keyword string) ([]int, []int, bool) {
-	pre_open := make([]int, 0)
-	pre_close := make([]int, 0)
-	pre_opening := false
+func findPreTag(source []string, keyword string) ([]int, []int, bool) {
+	preOpen := make([]int, 0)
+	preClose := make([]int, 0)
+	preOpening := false
 
 	for n, line := range source {
 		if line == fmt.Sprintf(`<pre lang="%s"></pre>`, keyword) {
-			pre_open = append(pre_open, n)
-			pre_close = append(pre_close, n)
+			preOpen = append(preOpen, n)
+			preClose = append(preClose, n)
 		} else if line == fmt.Sprintf(`<pre lang="%s">`, keyword) {
-			pre_open = append(pre_open, n)
-			pre_opening = true
-		} else if pre_opening && line == "</pre>" {
-			pre_close = append(pre_close, n)
-			pre_opening = false
+			preOpen = append(preOpen, n)
+			preOpening = true
+		} else if preOpening && line == "</pre>" {
+			preClose = append(preClose, n)
+			preOpening = false
 		}
 	}
 
-	return pre_open, pre_close, len(pre_open) > 0
+	return preOpen, preClose, len(preOpen) > 0
 }
 
-func find_keyword(source []string, keyword string) ([]int, bool) {
-	key_point := make([]int, 0)
+func findKeyword(source []string, keyword string) ([]int, bool) {
+	keyPoint := make([]int, 0)
 
 	for n, line := range source {
 		if line == fmt.Sprintf("\\%s", keyword) {
-			key_point = append(key_point, n)
+			keyPoint = append(keyPoint, n)
 		}
 	}
 
-	return key_point, len(key_point) > 0
+	return keyPoint, len(keyPoint) > 0
 }
 
 func readLine(path string) ([]string, error) {
@@ -194,14 +313,14 @@ func readLine(path string) ([]string, error) {
 }
 
 func writeLine(path string, source []string) error {
-	com_file, err := os.Create(path)
+	targetFile, err := os.Create(path)
 	if err != nil {
 		return nil
 	}
 
-	defer com_file.Close()
+	defer targetFile.Close()
 
-	writer := bufio.NewWriter(com_file)
+	writer := bufio.NewWriter(targetFile)
 	for _, line := range(source) {
 		if _, err := writer.WriteString(line + "\n"); err != nil {
 			return err
@@ -213,174 +332,187 @@ func writeLine(path string, source []string) error {
 	return nil
 }
 
-func check_candidate_directories(args []string) error {
-	n_cndt_dires := make([]string, 0)
-	for _, candidate := range cndt_dires {
-		skip := true
-		for _, hook := range args {
-			code_path := fmt.Sprintf("%s/%s/%s", candidate, from_json.Sources[hook].Dire, from_json.Sources[hook].File)
-			if _, err := os.Stat(code_path); err == nil {
-				skip = false
-				break
-			}
-		}
-		if !skip {
-			target_path := fmt.Sprintf("%s/%s", candidate, from_json.Insert_target)
-			if _, err := os.Stat(target_path); err != nil {
-				skip = true
-			}
-		}
-		if skip {
-			logger.Printf("skip: %s", candidate)
-		} else {
-			n_cndt_dires = append(n_cndt_dires, candidate)
-		}
+func showSuccessBranch(successBranch map[string][]string) {
+	fmt.Println("Success Branch")
+	if len(successBranch) == 0 {
+		fmt.Println("  None")
+		fmt.Println()
+		return
 	}
 
-	cndt_dires = n_cndt_dires
-	if len(cndt_dires) == 0 {
-		return fmt.Errorf("no candidate directory")
+	for bPath, hooks := range successBranch {
+		fmt.Printf("  [%s]\n    args: %s\n", bPath, strings.Join(hooks, ", "))
 	}
-
-	return nil
+	fmt.Println()
 }
 
-func run(c *cobra.Command, args []string) {
-	json_file, err := ioutil.ReadFile("../cheiron_settings/arrow.json")
-	if err != nil {
-		logger.Fatalln("setting file [arrow.json] does not exist\n\nTry: cheiron init")
+func showFailureBranch(failureBranch map[string][]string) {
+	fmt.Println("Failure Branch")
+	if len(failureBranch) == 0 {
+		fmt.Println("  None")
+		fmt.Println()
+		return
 	}
 
-	err = json.Unmarshal(json_file, &from_json)
+	for bPath, hooks := range failureBranch {
+		fmt.Printf("  [%s]\n    args: %s\n", bPath, strings.Join(hooks, ", "))
+	}
+	fmt.Println()
+}
+
+func Run(c *cobra.Command, args []string) {
+	jsonFile, err := ioutil.ReadFile("./.cheiron/arrow.json")
 	if err != nil {
+		logger.Fatalln("setting file [arrow.json] does not exist\n\nTry: cheiron project init")
+	}
+
+	if err := json.Unmarshal(jsonFile, &arrow); err != nil {
 		logger.Fatalln(err)
 	}
-
-	if err := check_args(from_json.Sources, args); err != nil {
+	
+	if err := checkArgs(arrow.Sources, args); err != nil {
 		logger.Fatalln(err)
 	} else {
 		fmt.Printf("valiable args: %s\n", strings.Join(hooks.hooks, ", "))
 	}
 
-	if err := os.Chdir(from_json.Project_root); err != nil {
+	if initialPath, err := os.Getwd(); err != nil {
+		logger.Fatalln(err)
+	} else {
+		defer os.Chdir(initialPath)
+	}
+
+	if err := os.Chdir(arrow.ProjectRoot); err != nil {
 		logger.Fatalln(err)
 	}
 
-	re, _ = regexp.Compile(`[\w\s]+`)
-	if err := list_candidate_dires(); err != nil {
+	if err := detectBranchPath(arrow.Branch); err != nil {
 		logger.Fatalln(err)
 	}
 
-	if err := check_candidate_directories(args); err != nil {
-		logger.Fatalln(err)
-	}
-	
-	for _, candidate := range cndt_dires {
-		target_source, err := readLine(fmt.Sprintf("%s/%s", candidate, from_json.Insert_target))
+	successBranch := make(map[string][]string)
+	failureBranch := make(map[string][]string)
+	for _, bPath := range branchPath {
+		if err := detectTargetFile(fmt.Sprintf("%s/%s", bPath, arrow.InsertTarget)); err != nil {
+			failureBranch[bPath] = hooks.hooks
+			continue
+		}
+		targetSource, err := readLine(targetFilePath)
 		if err != nil {
-			logger.Fatalln(err)
+			logger.Println(err)
+			continue
 		}
 
 		for _, hook := range hooks.hooks {
-			un_execute := false
-			source_detail := from_json.Sources[hook]
+			unExecute := false
+			sourceDetail := arrow.Sources[hook]
 
-			code_path, err := list_all_code_path(candidate, source_detail.Dire, source_detail.File, hook)
-			if err != nil {
-				logger.Println(err)
+			if err := listCodeDirPath(fmt.Sprintf("%s/%s", bPath, sourceDetail.Dire)); err != nil {
+				failureBranch[bPath] = append(failureBranch[bPath], hook)
 				continue
 			}
+
+			AdditionalListCodePath()
+
+			if err := listCodeFilePath(sourceDetail.File); err != nil {
+				failureBranch[bPath] = append(failureBranch[bPath], hook)
+				continue
+			}
+
 			codes := make([][]string, 0)
-			for _, path := range code_path {
+			for _, path := range codeFilePath {
 				code, err := readLine(path)
 				if err != nil {
 					logger.Println(err)
 					continue
 				}
-				code = escape_lt(code)
+				code = escapeLt(code)
 				codes = append(codes, code)
 			}
 
-			insert_point := make([]int, 0)
-			pre_open := make([]int, 0)
-			pre_close := make([]int, 0)
-			key_point := make([]int, 0)
+			insertPoint := make([]int, 0)
+			preOpen := make([]int, 0)
+			preClose := make([]int, 0)
+			keyPoint := make([]int, 0)
 			found := false
 			if !opt.key {
-				pre_open, pre_close, found = find_pre_tag(target_source, source_detail.Key)
+				preOpen, preClose, found = findPreTag(targetSource, sourceDetail.Key)
 				if !found {
-					key_point, found = find_keyword(target_source, source_detail.Key)
+					keyPoint, found = findKeyword(targetSource, sourceDetail.Key)
 				}
 			} else {
-				key_point, found = find_keyword(target_source, source_detail.Key)
+				keyPoint, found = findKeyword(targetSource, sourceDetail.Key)
 				if !found {
-					pre_open, pre_close, found = find_pre_tag(target_source, source_detail.Key)
+					preOpen, preClose, found = findPreTag(targetSource, sourceDetail.Key)
 				}
 			}
-			
+				
 			if !found {
-				un_execute = true
+				unExecute = true
 			} else {
-				if len(pre_open) > 0 {
-					if len(pre_open) != len(pre_close) {
-						un_execute = true
-					} else if opt.force || len(pre_open) == len(codes) {
+				if len(preOpen) > 0 {
+					if opt.force || len(preOpen) == len(codes) {
 						// 対象の pre タグの数と解答コードの数が一致しなくても解答コードの数だけ pre タグエリアの一旦削除を行う
 						x := 0
 						for i := range codes {
-							if i > len(pre_open) - 1 {
+							if i > len(preOpen) - 1 {
 								break
 							}
-							insert_point = append(insert_point, pre_open[i]-x)
-							target_source = append(target_source[:pre_open[i]-x], target_source[pre_close[i]+1-x:]...)
-							x += pre_close[i] - pre_open[i] + 1
+							insertPoint = append(insertPoint, preOpen[i]-x)
+							targetSource = append(targetSource[:preOpen[i]-x], targetSource[preClose[i]+1-x:]...)
+							x += preClose[i] - preOpen[i] + 1
 						}
 					} else {
 						// 対象の pre タグの数と解答コードの数が一致しなければ pre タグエリアの一旦削除とその後の挿入は実行しない
-						un_execute = true
+						unExecute = true
 					}
 				} else  {
 					// found(==True) なら必ず key_point は要素を持っている
 					x := 0
-					if opt.force || len(key_point) == len(codes) {
+					if opt.force || len(keyPoint) == len(codes) {
 						for i := range codes {
-							if i > len(key_point) - 1 {
+							if i > len(keyPoint) - 1 {
 								break
 							}
-							insert_point = append(insert_point, key_point[i]-x)
-							target_source = append(target_source[:key_point[i]], target_source[key_point[i]+1:]...)
+							insertPoint = append(insertPoint, keyPoint[i]-x)
+							targetSource = append(targetSource[:keyPoint[i]], targetSource[keyPoint[i]+1:]...)
 							x += 1
 						}
 					} else {
-						un_execute = true
+						unExecute = true
 					}
 				}
 			}
 
-			if un_execute {
-				logger.Printf("%*s: did not execute %s/%s\n", hooks.max_len, hook, from_json.Project_root, candidate)
+			if unExecute {
+				failureBranch[bPath] = append(failureBranch[bPath], hook)
+				// logger.Printf("%*s: did not execute %s/%s\n", hooks.maxLen, hook, arrow.ProjectRoot, bPath)
 				continue
 			}
 			x := 0
 			for i := range codes {
-				if i > len(insert_point) - 1 {
+				if i > len(insertPoint) - 1 {
 					break
 				}
-				point := insert_point[i]
+				point := insertPoint[i]
 				code := codes[i]
 				
-				code = append([]string{fmt.Sprintf(`<pre lang="%s">`, source_detail.Key)}, code...)
+				code = append([]string{fmt.Sprintf(`<pre lang="%s">`, sourceDetail.Key)}, code...)
 				code = append(code, "</pre>")
-				target_source = append(target_source[:point+x], append(code[:], target_source[point+x:]...)...)
+				targetSource = append(targetSource[:point+x], append(code[:], targetSource[point+x:]...)...)
 
 				x += len(code)
 			}
+			successBranch[bPath] = append(successBranch[bPath], hook)
 		}
 
-		if err := writeLine(fmt.Sprintf("%s/%s", candidate, from_json.Insert_target), target_source); err != nil {
+		if err := writeLine(targetFilePath, targetSource); err != nil {
 			logger.Println(err)
 		}
 	}
+
+	showSuccessBranch(successBranch)
+	showFailureBranch(failureBranch)
 
 	fmt.Println("done")
 }
