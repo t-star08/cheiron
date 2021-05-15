@@ -205,6 +205,12 @@ func listCodeFilePath(codeFile string) error {
 	if err != nil {
 		return err
 	}
+	if exp, exist := regexpShortCut[codeFile]; exist {
+		re, err = regexp.Compile(exp)
+		if err != nil {
+			return err
+		}
+	}
 
 	for _, path := range codeDirPath {
 		lsDir, _ := ioutil.ReadDir(path)
@@ -475,7 +481,7 @@ func Run(c *cobra.Command, args []string) {
 								break
 							}
 							insertPoint = append(insertPoint, keyPoint[i]-x)
-							targetSource = append(targetSource[:keyPoint[i]], targetSource[keyPoint[i]+1:]...)
+							targetSource = append(targetSource[:keyPoint[i]-x], targetSource[keyPoint[i]+1-x:]...)
 							x += 1
 						}
 					} else {
