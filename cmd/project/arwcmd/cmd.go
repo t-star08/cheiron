@@ -53,6 +53,13 @@ type Hook struct {
 	maxLen	int
 }
 
+type BranchDetail struct {
+	hook	string
+	codeID	[]string
+	comment	string
+}
+
+
 type Arrow struct {
 	ProjectRoot		string					`json:"project_root"`
 	Branch			string					`json:"branch"`
@@ -117,7 +124,6 @@ func visit(path string, depth int) ([]string, error) {
 	}
 
 
-	// 完全一致
 	re, err := regexp.Compile(head)
 	if err != nil {
 		return spot, err
@@ -172,7 +178,7 @@ func listCodeDirPath(path string) error {
 	} else {
 		if len(p) == 0 {
 			wd, _ := os.Getwd()
-			return fmt.Errorf("no file matched [%s/%s]", wd, path)
+			return fmt.Errorf("no directory matched [%s/%s]", wd, path)
 		}
 		codeDirPath = p
 		return nil
@@ -228,7 +234,11 @@ func listCodeFilePath(codeFile string) error {
 	
 	codeFilePath = rst
 
-	return nil
+	if len(codeFilePath) == 0 {
+		return fmt.Errorf("no file matched")
+	} else {
+		return nil
+	}
 }
 
 func detectTargetFile(path string) error {
@@ -288,16 +298,26 @@ func findPreTag(source []string, keyword string) ([]int, []int, bool) {
 	return preOpen, preClose, len(preOpen) > 0
 }
 
-func findKeyword(source []string, keyword string) ([]int, bool) {
+func findKeyword(source []string, keyword string) ([]int, map[int]string, bool) {
 	keyPoint := make([]int, 0)
+	additionalID := make(map[int]string)
 
+	re, _ := regexp.Compile(fmt.Sprintf(`^\\%s`, keyword))
 	for n, line := range source {
-		if line == fmt.Sprintf("\\%s", keyword) {
+		if re.MatchString(line) {
+			validateLine := strings.Split(line, `\`)
+			if validateLine[1] != keyword {
+				continue
+			}
+			if len(validateLine) > 2 {
+				id := strings.Join(validateLine[2:], "/")
+				additionalID[n] = id
+			}
 			keyPoint = append(keyPoint, n)
 		}
 	}
 
-	return keyPoint, len(keyPoint) > 0
+	return keyPoint, additionalID, len(keyPoint) > 0
 }
 
 func readLine(path string) ([]string, error) {
@@ -338,7 +358,7 @@ func writeLine(path string, source []string) error {
 	return nil
 }
 
-func showSuccessBranch(successBranch map[string][]string) {
+func showSuccessBranch(successBranch map[string][]BranchDetail) {
 	fmt.Println("Success Branch")
 	if len(successBranch) == 0 {
 		fmt.Println("  None")
@@ -346,13 +366,19 @@ func showSuccessBranch(successBranch map[string][]string) {
 		return
 	}
 
-	for bPath, hooks := range successBranch {
-		fmt.Printf("  [%s]\n    args: %s\n", bPath, strings.Join(hooks, ", "))
+	for bPath, bDetails := range successBranch {
+		fmt.Printf("  [%s]\n", bPath)
+		for _, bDetail := range bDetails {
+			fmt.Printf("    Args: %s\n", bDetail.hook)
+			for _, codeID := range bDetail.codeID {
+				fmt.Printf("      - %s\n", codeID)
+			}
+		}
 	}
 	fmt.Println()
 }
 
-func showFailureBranch(failureBranch map[string][]string) {
+func showFailureBranch(failureBranch map[string][]BranchDetail) {
 	fmt.Println("Failure Branch")
 	if len(failureBranch) == 0 {
 		fmt.Println("  None")
@@ -360,8 +386,15 @@ func showFailureBranch(failureBranch map[string][]string) {
 		return
 	}
 
-	for bPath, hooks := range failureBranch {
-		fmt.Printf("  [%s]\n    args: %s\n", bPath, strings.Join(hooks, ", "))
+	for bPath, bDetails := range failureBranch {
+		fmt.Printf("  [%s]\n", bPath)
+		for _, bDetail := range bDetails {
+			fmt.Printf("    Args: %s\n", bDetail.hook)
+			fmt.Printf("     Cuz: %s\n", bDetail.comment)
+			for _, codeID := range bDetail.codeID {
+				fmt.Printf("      - %s\n", codeID)
+			}
+		}
 	}
 	fmt.Println()
 }
@@ -396,11 +429,15 @@ func Run(c *cobra.Command, args []string) {
 		logger.Fatalln(err)
 	}
 
-	successBranch := make(map[string][]string)
-	failureBranch := make(map[string][]string)
+	successBranch := make(map[string][]BranchDetail)
+	failureBranch := make(map[string][]BranchDetail)
 	for _, bPath := range branchPath {
 		if err := detectTargetFile(fmt.Sprintf("%s/%s", bPath, arrow.InsertTarget)); err != nil {
-			failureBranch[bPath] = hooks.hooks
+			failureBranch[bPath] = append(failureBranch[bPath], BranchDetail {
+				strings.Join(hooks.hooks, ", "),
+				nil,
+				"Target File Is Not Detected",
+			})
 			continue
 		}
 		targetSource, err := readLine(targetFilePath)
@@ -414,40 +451,56 @@ func Run(c *cobra.Command, args []string) {
 			sourceDetail := arrow.Sources[hook]
 
 			if err := listCodeDirPath(fmt.Sprintf("%s/%s", bPath, sourceDetail.Dire)); err != nil {
-				failureBranch[bPath] = append(failureBranch[bPath], hook)
+				failureBranch[bPath] = append(failureBranch[bPath], BranchDetail {
+					hook,
+					nil,
+					"Code Directory Does Not Exist",
+				})
 				continue
 			}
 
 			AdditionalListCodePath()
 
 			if err := listCodeFilePath(sourceDetail.File); err != nil {
-				failureBranch[bPath] = append(failureBranch[bPath], hook)
+				failureBranch[bPath] = append(failureBranch[bPath], BranchDetail {
+					hook,
+					nil,
+					"No Code File In The All Code Directory",
+				})
 				continue
 			}
 
 			codes := make([][]string, 0)
+			codeID := make([]string, 0)
+			codeMap := make(map[string][]string)
 			for _, path := range codeFilePath {
 				code, err := readLine(path)
 				if err != nil {
 					logger.Println(err)
 					continue
 				}
+				p := strings.Split(path, "/")
+				id := strings.Join(p[len(p)-2:], "/")
+				
 				code = escapeLt(code)
 				codes = append(codes, code)
+				codeID = append(codeID, id)
+				codeMap[id] = code
 			}
 
 			insertPoint := make([]int, 0)
 			preOpen := make([]int, 0)
 			preClose := make([]int, 0)
 			keyPoint := make([]int, 0)
+			additionalID := make(map[int]string)
 			found := false
 			if !opt.key {
 				preOpen, preClose, found = findPreTag(targetSource, sourceDetail.Key)
 				if !found {
-					keyPoint, found = findKeyword(targetSource, sourceDetail.Key)
+					keyPoint, additionalID, found = findKeyword(targetSource, sourceDetail.Key)
 				}
 			} else {
-				keyPoint, found = findKeyword(targetSource, sourceDetail.Key)
+				keyPoint, additionalID, found = findKeyword(targetSource, sourceDetail.Key)
 				if !found {
 					preOpen, preClose, found = findPreTag(targetSource, sourceDetail.Key)
 				}
@@ -458,7 +511,7 @@ func Run(c *cobra.Command, args []string) {
 			} else {
 				if len(preOpen) > 0 {
 					if opt.force || len(preOpen) == len(codes) {
-						// 対象の pre タグの数と解答コードの数が一致しなくても解答コードの数だけ pre タグエリアの一旦削除を行う
+						// force: 対象の pre タグの数とコードの数が一致しなくてもコードの数だけ pre タグエリアの一旦削除を行う
 						x := 0
 						for i := range codes {
 							if i > len(preOpen) - 1 {
@@ -469,13 +522,30 @@ func Run(c *cobra.Command, args []string) {
 							x += preClose[i] - preOpen[i] + 1
 						}
 					} else {
-						// 対象の pre タグの数と解答コードの数が一致しなければ pre タグエリアの一旦削除とその後の挿入は実行しない
+						// 対象の pre タグの数とコードの数が一致しなければ pre タグエリアの一旦削除とその後の挿入は実行しない
 						unExecute = true
 					}
 				} else  {
 					// found(==True) なら必ず key_point は要素を持っている
 					x := 0
-					if opt.force || len(keyPoint) == len(codes) {
+					if len(additionalID) > 0 {
+						for _, point:= range keyPoint {
+							if id, exist := additionalID[point]; exist {
+								if _, exist := codeMap[id]; !exist {
+									continue
+								}
+								delete(additionalID, point)
+								additionalID[point-x] = id
+
+								insertPoint = append(insertPoint, point-x)
+								targetSource = append(targetSource[:point-x], targetSource[point+1-x:]...)
+								x += 1								
+							}
+						}
+						if len(insertPoint) == 0 {
+							unExecute = true
+						}
+					} else if opt.force || len(keyPoint) == len(codes) {
 						for i := range codes {
 							if i > len(keyPoint) - 1 {
 								break
@@ -491,17 +561,26 @@ func Run(c *cobra.Command, args []string) {
 			}
 
 			if unExecute {
-				failureBranch[bPath] = append(failureBranch[bPath], hook)
-				// logger.Printf("%*s: did not execute %s/%s\n", hooks.maxLen, hook, arrow.ProjectRoot, bPath)
+				failureBranch[bPath] = append(failureBranch[bPath], BranchDetail {
+					hook,
+					codeID,
+					"No Insert Points In Target File OR Codes ≠ Insert Points",
+				})
 				continue
 			}
 			x := 0
-			for i := range codes {
-				if i > len(insertPoint) - 1 {
-					break
-				}
+			executedCodeID := make([]string, 0)
+			for i := range insertPoint {
 				point := insertPoint[i]
-				code := codes[i]
+				code := make([]string, 0)
+
+				if id, exist := additionalID[point]; exist {
+					code = codeMap[id]
+					executedCodeID = append(executedCodeID, id)
+				} else if i < len(codes) {
+					code = codes[i]
+					executedCodeID = append(executedCodeID, codeID[i])
+				}
 				
 				code = append([]string{fmt.Sprintf(`<pre lang="%s">`, sourceDetail.Key)}, code...)
 				code = append(code, "</pre>")
@@ -509,7 +588,11 @@ func Run(c *cobra.Command, args []string) {
 
 				x += len(code)
 			}
-			successBranch[bPath] = append(successBranch[bPath], hook)
+			successBranch[bPath] = append(successBranch[bPath], BranchDetail {
+				hook,
+				executedCodeID,
+				"",
+			})
 		}
 
 		if err := writeLine(targetFilePath, targetSource); err != nil {
