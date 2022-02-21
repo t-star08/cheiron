@@ -1,21 +1,22 @@
 package main
 
 import (
-	"github.com/t-star08/cheiron/cmd/insert/istcmd"
-	"github.com/t-star08/cheiron/cmd/project"
-
 	"github.com/spf13/cobra"
+	"github.com/t-star08/cheiron/cmd/arwcmd"
+	"github.com/t-star08/cheiron/cmd/initcmd"
+	"github.com/t-star08/cheiron/cmd/statuscmd"
 )
 
 var cmd = &cobra.Command {
 	Use: "cheiron",
-	Version: "v1.1.0",
+	Version: "v2.0.0",
 }
 
 func init() {
 	cmd.AddCommand (
-		project.CMD,
-		istcmd.CMD,
+		arwcmd.CMD,
+		initcmd.CMD,
+		statuscmd.CMD,
 	)
 }
 
