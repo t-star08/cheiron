@@ -88,7 +88,7 @@ func run(c *cobra.Command, args []string) {
 		logger.Fatalln(err)
 	}
 
-	if err := arrow.MeetInsertTargetRequirements(pre, project); err != nil {
+	if err := arrow.ResolveInsertTargetRequirements(pre, project); err != nil {
 		logger.Fatalln(err)
 	}
 

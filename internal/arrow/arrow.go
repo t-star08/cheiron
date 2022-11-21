@@ -55,22 +55,34 @@ func PullInsertTargetSources(prj *resource.Project) error {
 		if branch.Ignored || !branch.FoundInsertTarget {
 			continue
 		}
-		branch.InsertTarget.Source , _ = ioFile.Gets(branch.InsertTarget.PathToInsertTarget)
+		branch.InsertTarget.Source, _ = ioFile.Gets(branch.InsertTarget.PathToInsertTarget)
 	}
 	return nil
 }
 
-func MeetInsertTargetRequirements(pre *preparator.Preparator, prj *resource.Project) error {
+func ResolveInsertTargetRequirements(pre *preparator.Preparator, prj *resource.Project) error {
 	for _, branch := range prj.Branches {
-		if branch.Ignored || !branch.FoundInsertTarget {
+		if branch.Ignored || !branch.FoundInsertTarget || branch.MetInsertTargetRequirements {
 			continue
 		}
-		DecideBranchSources(pre, prj, branch.InsertTarget.Source, func(b *resource.Branch) {})
+
+		arrowLines := document.FindArrowLines(branch.InsertTarget.Source)
+		arrowPaths, whetherMust, protectedStrs := document.ParseArrowExps(branch.InsertTarget.Source)	
+		branch.InsertTarget.SetPoints(arrowLines, arrowPaths, whetherMust, protectedStrs)
+		if err := resource.GlobBranchSourceFilePaths(branch, pre.SuffixStrategies); err != nil {
+			branch.Message.Failed(err.Error())
+			continue
+		}
+		if err := decideBranchSourceStrategies(branch, pre.SuffixStrategies); err != nil {
+			branch.Message.Failed(err.Error())			
+			continue
+		}
+		branch.MetInsertTargetRequirements = true
 	}
 	return nil
 }
 
-func DecideBranchSources(pre *preparator.Preparator, prj *resource.Project, insertTarget []string, more func(b *resource.Branch)) error {
+func DecideBranchSources(pre *preparator.Preparator, prj *resource.Project, pathToTemplate string, insertTarget []string) error {
 	arrowLines := document.FindArrowLines(insertTarget)
 	arrowPaths, whetherMust, protectedStrs := document.ParseArrowExps(insertTarget)
 	for _, branch := range prj.Branches {
@@ -90,8 +102,8 @@ func DecideBranchSources(pre *preparator.Preparator, prj *resource.Project, inse
 		}
 		branch.InsertTarget.Source = document.Copy(insertTarget)
 		branch.MetInsertTargetRequirements = true
+		branch.PathToBestTemplate = pathToTemplate
 		branch.Message.Reset()
-		more(branch)
 	}
 	return nil
 }

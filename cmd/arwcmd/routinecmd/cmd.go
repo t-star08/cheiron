@@ -36,7 +36,7 @@ func setPreWorker() {
 	)
 }
 
-func allAllowInsertTarget(prj *resource.Project) error {
+func setAllInsertTargetStatOK(prj *resource.Project) error {
 	for _, branch := range prj.Branches {
 		branch.FoundInsertTarget = true
 		branch.InsertTarget = resource.CreateInsertTarget(fmt.Sprintf("%s/%s", branch.PathToBranch, pre.Cheiron.InsertTarget))
@@ -65,12 +65,7 @@ func decideBranchSourceDetails(prj *resource.Project) error {
 			template = p
 		}
 
-		arrow.DecideBranchSources(
-			pre, prj, template,
-			func(branch *resource.Branch) {
-				branch.PathToBestTemplate = pathToTemplate
-			},
-		)
+		arrow.DecideBranchSources(pre, prj, pathToTemplate, template)
 	}
 	return nil
 }
@@ -92,7 +87,7 @@ func run(c *cobra.Command, args []string) {
 		logger.Fatalln(err)
 	}
 
-	if err := allAllowInsertTarget(project); err != nil {
+	if err := setAllInsertTargetStatOK(project); err != nil {
 		logger.Fatalln(err)
 	}
 
